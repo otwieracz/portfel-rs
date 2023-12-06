@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{error, fx, portfolio};
 use serde::{Deserialize, Serialize};
 
@@ -26,21 +28,58 @@ impl Amount {
             value: value,
         }
     }
-    /// Convert the amount to the native currency for Rates provider
-    fn to_native(&self, rates: &fx::Rates) -> Amount {
-        Amount {
-            currency: Currency::NATIVE,
-            value: rates.to_native(self.currency, self.value),
+}
+
+impl std::ops::Sub for Amount {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        assert!(
+            self.currency == rhs.currency,
+            "Cannot subtract amounts with different currencies: {} != {}",
+            self.currency,
+            rhs.currency
+        );
+        Self {
+            currency: self.currency,
+            value: self.value - rhs.value,
         }
     }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct InvestmentGroup {
+    id: String,
+    currency: Currency,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 struct Position {
     name: String,
+    group: String,
     ticker: String,
     amount: Amount,
     target: f64,
+}
+
+impl std::ops::Sub for Position {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        assert!(
+            self.amount.currency == rhs.amount.currency,
+            "Cannot subtract positions with different currencies: {} != {}",
+            self.amount.currency,
+            rhs.amount.currency
+        );
+        Self {
+            name: self.name,
+            group: self.group,
+            ticker: self.ticker,
+            amount: self.amount - rhs.amount,
+            target: self.target,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -67,6 +106,67 @@ impl std::fmt::Display for Portfolio {
             serde_yaml::to_string(&self.positions).map_err(|_| std::fmt::Error)?
         )?;
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct PositionChange {
+    position: Position,
+    amount: Amount,
+}
+
+#[derive(Debug)]
+pub struct ChangeRequest {
+    changes: Vec<PositionChange>,
+}
+
+// Used only as a display helper
+#[derive(Debug, Serialize)]
+struct ChangeRequestSerialize {
+    changes: Vec<PositionChange>,
+    change_per_group: HashMap<String, Amount>,
+}
+
+impl Serialize for ChangeRequest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::ser::Serializer,
+    {
+        ChangeRequestSerialize {
+            changes: self.changes.clone(),
+            change_per_group: self.change_per_group(),
+        }
+        .serialize(serializer)
+    }
+}
+
+// impl std::fmt::Display for ChangeRequest {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         let change_request_display = ChangeRequestSerialize {
+//             changes: self.changes.clone(),
+//             change_per_group: self.change_per_group(),
+//         };
+//         writeln!(
+//             f,
+//             "{}",
+//             serde_yaml::to_string(&change_request_display).map_err(|_| std::fmt::Error)?
+//         )?;
+//         Ok(())
+//     }
+// }
+
+impl ChangeRequest {
+    pub fn change_per_group(&self) -> HashMap<String, Amount> {
+        let mut change_per_group = HashMap::new();
+        for change in &self.changes {
+            let group = change.position.group.clone();
+            let amount = change.amount.clone();
+            let entry = change_per_group
+                .entry(group)
+                .or_insert(Amount::new(amount.currency, 0.0));
+            entry.value += amount.value;
+        }
+        change_per_group
     }
 }
 
@@ -99,10 +199,10 @@ impl Portfolio {
         amount
     }
 
-    pub fn balanced(&self, investment: Amount) -> Portfolio {
+    pub fn balance(&self, investment: Amount) -> ChangeRequest {
         let total_value = self.total_value(investment.currency);
 
-        let positions = self
+        let position_changes = self
             .positions
             .clone()
             .into_iter()
@@ -116,25 +216,25 @@ impl Portfolio {
                 let new_value_in_currency = position.target
                     * (investment.value + total_value.value)
                     - old_value_in_currency;
-                Position {
-                    name: position.name,
-                    ticker: position.ticker,
+
+                let new_value = self.rates.convert(
+                    investment.currency,
+                    position.amount.currency,
+                    new_value_in_currency,
+                );
+
+                PositionChange {
+                    position: position.clone(),
                     amount: Amount {
                         currency: position.amount.currency,
-                        value: self.rates.convert(
-                            investment.currency,
-                            position.amount.currency,
-                            new_value_in_currency,
-                        ),
+                        value: new_value - position.amount.value,
                     },
-                    target: position.target,
                 }
             })
             .collect();
 
-        Portfolio {
-            rates: self.rates.clone(),
-            positions: positions,
+        ChangeRequest {
+            changes: position_changes,
         }
     }
 }
@@ -164,6 +264,7 @@ mod test {
         portfolio.positions.push(Position {
             name: "Test".to_string(),
             ticker: "TEST".to_string(),
+            group: "TEST".to_string(),
             amount: Amount {
                 currency: Currency::USD,
                 value: 100.0,
@@ -173,6 +274,7 @@ mod test {
         portfolio.positions.push(Position {
             name: "Test".to_string(),
             ticker: "TEST".to_string(),
+            group: "TEST".to_string(),
             amount: Amount {
                 currency: Currency::EUR,
                 value: 100.0,
@@ -208,6 +310,7 @@ mod test {
                 Position {
                     name: "Test 1".to_string(),
                     ticker: "TEST1".to_string(),
+                    group: "TEST".to_string(),
                     amount: Amount {
                         currency: Currency::USD,
                         value: 0.0,
@@ -217,6 +320,7 @@ mod test {
                 Position {
                     name: "Test 2".to_string(),
                     ticker: "TEST2".to_string(),
+                    group: "TEST".to_string(),
                     amount: Amount {
                         currency: Currency::EUR,
                         value: 0.0,
@@ -230,27 +334,41 @@ mod test {
             value: 1000.0,
         };
 
-        let balanced = portfolio.balanced(investment);
+        let balanced = portfolio.balance(investment);
         assert_eq!(
-            balanced.positions,
+            balanced.changes,
             vec![
-                Position {
-                    name: "Test 1".to_string(),
-                    ticker: "TEST1".to_string(),
+                PositionChange {
+                    position: Position {
+                        name: "Test 1".to_string(),
+                        ticker: "TEST1".to_string(),
+                        group: "TEST".to_string(),
+                        amount: Amount {
+                            currency: Currency::USD,
+                            value: 0.0,
+                        },
+                        target: 0.3,
+                    },
                     amount: Amount {
                         currency: Currency::USD,
                         value: 300.0,
                     },
-                    target: 0.3,
                 },
-                Position {
-                    name: "Test 2".to_string(),
-                    ticker: "TEST2".to_string(),
+                PositionChange {
+                    position: Position {
+                        name: "Test 2".to_string(),
+                        ticker: "TEST2".to_string(),
+                        group: "TEST".to_string(),
+                        amount: Amount {
+                            currency: Currency::EUR,
+                            value: 0.0,
+                        },
+                        target: 0.7,
+                    },
                     amount: Amount {
                         currency: Currency::EUR,
                         value: 583.33,
                     },
-                    target: 0.7,
                 },
             ]
         );

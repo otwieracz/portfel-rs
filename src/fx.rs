@@ -1,4 +1,4 @@
-use std::{collections::HashMap, num::ParseFloatError};
+use std::{collections::HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +48,12 @@ impl Currency {
     }
 }
 
+impl std::fmt::Display for Currency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_str())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Rates {
     pub rates: HashMap<Currency, f64>,
@@ -87,10 +93,6 @@ impl Rates {
 
     pub fn convert(&self, from: Currency, to: Currency, amount: f64) -> f64 {
         amount * self.rates.get(&from).unwrap() / self.rates.get(&to).unwrap()
-    }
-
-    pub fn to_native(&self, currency: Currency, amount: f64) -> f64 {
-        self.convert(currency, Currency::NATIVE, amount)
     }
 }
 
