@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{error, fx, portfolio};
+use crate::{error, fx, xtb};
 use serde::{Deserialize, Serialize};
 
 use crate::fx::Currency;
@@ -83,12 +83,44 @@ impl std::ops::Sub for Position {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct Group {
+    id: String,
+    currency: Currency,
+    xtb: Option<xtb::XtbAccount>,
+}
+
+impl Group {
+    pub fn new(id: String, currency: Currency) -> Group {
+        Group {
+            id: id,
+            currency: currency,
+            xtb: None,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Config {
+    xtb: xtb::XtbConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Portfolio {
     /* Internal */
     #[serde(skip)]
     rates: fx::Rates,
     /* Saved fields */
+    config: Config,
+    groups: Vec<Group>,
     positions: Vec<Position>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            xtb: xtb::XtbConfig::default(),
+        }
+    }
 }
 
 impl std::fmt::Display for Portfolio {
@@ -115,48 +147,51 @@ struct PositionChange {
     amount: Amount,
 }
 
+impl std::fmt::Display for PositionChange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "[{:8.8}] {:37.36}: {:9.2} {} -[+ {:9.2} {}]> {:9.2} {}",
+            self.position.ticker.to_string(),
+            self.position.name.to_string(),
+            self.position.amount.value,
+            self.position.amount.currency,
+            self.amount.value,
+            self.amount.currency,
+            self.position.amount.value + self.amount.value,
+            self.position.amount.currency
+        )?;
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub struct ChangeRequest {
     changes: Vec<PositionChange>,
 }
 
-// Used only as a display helper
-#[derive(Debug, Serialize)]
-struct ChangeRequestSerialize {
-    changes: Vec<PositionChange>,
-    change_per_group: HashMap<String, Amount>,
-}
-
-impl Serialize for ChangeRequest {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::ser::Serializer,
-    {
-        ChangeRequestSerialize {
-            changes: self.changes.clone(),
-            change_per_group: self.change_per_group(),
+impl std::fmt::Display for ChangeRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Change requests:")?;
+        for change in &self.changes {
+            writeln!(f, "- {}", change)?;
         }
-        .serialize(serializer)
+        writeln!(f, "")?;
+        writeln!(f, "Change per group:")?;
+        for (group, amount) in self.change_per_group() {
+            writeln!(
+                f,
+                "- {:16.47}: + {:9.2} {}",
+                group, amount.value, amount.currency
+            )?;
+        }
+        Ok(())
     }
 }
 
-// impl std::fmt::Display for ChangeRequest {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         let change_request_display = ChangeRequestSerialize {
-//             changes: self.changes.clone(),
-//             change_per_group: self.change_per_group(),
-//         };
-//         writeln!(
-//             f,
-//             "{}",
-//             serde_yaml::to_string(&change_request_display).map_err(|_| std::fmt::Error)?
-//         )?;
-//         Ok(())
-//     }
-// }
-
 impl ChangeRequest {
     pub fn change_per_group(&self) -> HashMap<String, Amount> {
+        // TODO: Use actual group config for currency, not position currency
         let mut change_per_group = HashMap::new();
         for change in &self.changes {
             let group = change.position.group.clone();
@@ -174,6 +209,8 @@ impl Portfolio {
     pub fn new() -> Portfolio {
         Portfolio {
             rates: fx::Rates::new(),
+            config: Config::default(),
+            groups: Vec::new(),
             positions: Vec::new(),
         }
     }
@@ -258,13 +295,18 @@ mod test {
 
         let mut portfolio = Portfolio {
             rates: rates,
+            config: Config::default(),
+            groups: vec![
+                Group::new("TEST1".to_string(), Currency::USD),
+                Group::new("TEST2".to_string(), Currency::EUR),
+            ],
             positions: Vec::new(),
         };
 
         portfolio.positions.push(Position {
             name: "Test".to_string(),
             ticker: "TEST".to_string(),
-            group: "TEST".to_string(),
+            group: "TEST1".to_string(),
             amount: Amount {
                 currency: Currency::USD,
                 value: 100.0,
@@ -274,7 +316,7 @@ mod test {
         portfolio.positions.push(Position {
             name: "Test".to_string(),
             ticker: "TEST".to_string(),
-            group: "TEST".to_string(),
+            group: "TEST2".to_string(),
             amount: Amount {
                 currency: Currency::EUR,
                 value: 100.0,
@@ -305,12 +347,17 @@ mod test {
         };
 
         let portfolio = Portfolio {
+            config: Config::default(),
+            groups: vec![
+                Group::new("TEST1".to_string(), Currency::USD),
+                Group::new("TEST2".to_string(), Currency::EUR),
+            ],
             rates: rates,
             positions: vec![
                 Position {
                     name: "Test 1".to_string(),
                     ticker: "TEST1".to_string(),
-                    group: "TEST".to_string(),
+                    group: "TEST1".to_string(),
                     amount: Amount {
                         currency: Currency::USD,
                         value: 0.0,
@@ -320,7 +367,7 @@ mod test {
                 Position {
                     name: "Test 2".to_string(),
                     ticker: "TEST2".to_string(),
-                    group: "TEST".to_string(),
+                    group: "TEST2".to_string(),
                     amount: Amount {
                         currency: Currency::EUR,
                         value: 0.0,
@@ -342,7 +389,7 @@ mod test {
                     position: Position {
                         name: "Test 1".to_string(),
                         ticker: "TEST1".to_string(),
-                        group: "TEST".to_string(),
+                        group: "TEST1".to_string(),
                         amount: Amount {
                             currency: Currency::USD,
                             value: 0.0,
@@ -358,7 +405,7 @@ mod test {
                     position: Position {
                         name: "Test 2".to_string(),
                         ticker: "TEST2".to_string(),
-                        group: "TEST".to_string(),
+                        group: "TEST2".to_string(),
                         amount: Amount {
                             currency: Currency::EUR,
                             value: 0.0,

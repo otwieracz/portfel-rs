@@ -1,4 +1,4 @@
-use std::{collections::HashMap};
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -21,11 +21,11 @@ pub enum Currency {
     GBP,
     CHF,
     PLN,
-    NATIVE
+    NATIVE,
 }
 
 impl Currency {
-    fn from_str(s: &str) -> Option<Currency> {
+    pub fn from_str(s: &str) -> Option<Currency> {
         match s {
             "USD" => Some(Currency::USD),
             "EUR" => Some(Currency::EUR),

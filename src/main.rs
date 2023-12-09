@@ -1,19 +1,43 @@
 use crate::fx::Currency;
+use clap::{Parser, Subcommand};
 
 mod error;
 mod fx;
 mod portfolio;
+mod xtb;
+
+#[derive(Subcommand)]
+enum Commands {
+    Invest {
+        #[arg(short, long)]
+        amount: f64,
+        #[arg(short, long)]
+        currency: String,
+    },
+}
+
+#[derive(Parser)]
+struct Cli {
+    #[clap(short, long, value_name = "YAML")]
+    portfolio: String,
+    #[clap(subcommand)]
+    command: Option<Commands>,
+}
 
 fn main() {
-    let portfolio = portfolio::Portfolio::from_file("portfolio.yaml").unwrap();
-    println!("Portfolio: {}", portfolio);
-    // println!(
-    //     "Balanced portfolio after:\n {:?}",
-    //     portfolio.balance(portfolio::Amount::new(Currency::USD, 6000.0))
-    // );
-    let change_request = portfolio.balance(portfolio::Amount::new(Currency::USD, 6000.0));
-    println!(
-        "Balanced portfolio per group:\n {}",
-        serde_yaml::to_string(&change_request).unwrap()
-    );
+    let cli = Cli::parse();
+    let portfolio = portfolio::Portfolio::from_file(&cli.portfolio).unwrap();
+
+    match &cli.command {
+        Some(Commands::Invest { amount, currency }) => {
+            let amount = portfolio::Amount::new(
+                Currency::from_str(currency)
+                    .expect(format!("Unknown invest currency: {}!", &currency).as_str()),
+                *amount,
+            );
+            let change_request = portfolio.balance(amount);
+            println!("{}", &change_request);
+        }
+        None => todo!(),
+    }
 }
