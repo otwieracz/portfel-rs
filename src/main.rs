@@ -1,10 +1,11 @@
-use crate::fx::Currency;
+use crate::{fx::Currency, amount::Amount};
 use clap::{Parser, Subcommand};
 
 mod error;
 mod fx;
 mod portfolio;
 mod xtb;
+mod amount;
 
 #[derive(Subcommand)]
 enum Commands {
@@ -30,7 +31,7 @@ fn main() {
 
     match &cli.command {
         Some(Commands::Invest { amount, currency }) => {
-            let amount = portfolio::Amount::new(
+            let amount = Amount::new(
                 Currency::from_str(currency)
                     .expect(format!("Unknown invest currency: {}!", &currency).as_str()),
                 *amount,

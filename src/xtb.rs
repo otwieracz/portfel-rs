@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
@@ -6,7 +7,8 @@ use tokio::net::TcpStream;
 use tokio_native_tls::TlsConnector;
 use tokio_native_tls::{native_tls, TlsStream};
 
-use crate::error;
+use crate::amount::Amount;
+use crate::{error, fx};
 
 use self::command::get_trades::Trade;
 
@@ -66,94 +68,15 @@ pub mod command {
 
         #[derive(Debug, Deserialize)]
         pub struct Trade {
-            pub close_price: f64,
-            // pub closeTime: i64,
-            // pub cmd: i64,
-            // pub comment: Option<String>,
-            // pub commission: f64,
-            // pub commissionAgent: f64,
-            // pub customComment: Option<String>,
-            // pub digits: i64,
-            // pub expiration: i64,
-            // pub marginRate: f64,
-            pub open_price: f64,
-            // pub openTime: i64,
-            // pub order: i64,
-            // pub profit: f64,
-            // pub sl: f64,
-            // pub state: i64,
-            // pub storage: f64,
             pub symbol: Option<String>,
-            // pub tp: f64,
             pub volume: f64,
         }
     }
 
-    /*
-        {
-        "command": "getTickPrices",
-        "arguments": {
-            "level": 0,
-            "symbols": ["EURPLN", "AGO.PL", ...],
-            "timestamp": 1262944112000
-        }
-    }
-     */
-    pub mod get_tick_prices {
-        use serde::Deserialize;
-
-        use super::Command;
-        use std::collections::HashMap;
-
-        pub fn get_tick_prices(symbols: Vec<String>) -> Command {
-            let mut arguments = HashMap::new();
-            arguments.insert("level".to_string(), 0.into());
-            arguments.insert("symbols".to_string(), symbols.into());
-            arguments.insert("timestamp".to_string(), 0.into());
-            Command {
-                command: "getTickPrices".to_string(),
-                arguments,
-            }
-        }
-
-        #[derive(Debug, Deserialize)]
-        pub struct Response {
-            pub status: bool,
-            pub returnData: ReturnData,
-        }
-
-        #[derive(Debug, Deserialize)]
-        pub struct ReturnData {
-            pub quotations: Vec<TickRecord>,
-        }
-
-        #[derive(Debug, Deserialize)]
-        pub struct TickRecord {
-            pub ask: f64,
-            pub askVolume: Option<i64>,
-            pub bid: f64,
-            pub bidVolume: Option<i64>,
-            pub high: f64,
-            pub level: i64,
-            pub low: f64,
-            pub spreadRaw: f64,
-            pub spreadTable: f64,
-            pub symbol: String,
-            pub timestamp: i64,
-        }
-    }
-
-    /*
-            {
-        "command": "getSymbol",
-        "arguments": {
-            "symbol": "EURPLN"
-        }
-    }
-
-    */
     pub mod get_symbol {
         use serde::Deserialize;
+
+        use crate::fx;
 
         use super::Command;
         use std::collections::HashMap;
@@ -177,6 +100,7 @@ pub mod command {
         pub struct SymbolRecord {
             pub bid: f64,
             pub symbol: String,
+            pub currencyProfit: fx::Currency,
         }
     }
 }
@@ -185,8 +109,8 @@ pub mod command {
 pub struct PositionMarketValue {
     pub symbol: String,
     pub volume: f64,
-    pub bid_price: f64,
-    pub market_value: f64,
+    pub bid_price: Amount,
+    pub market_value: Amount,
 }
 
 type Stream = BufReader<TlsStream<TcpStream>>;
@@ -268,7 +192,6 @@ impl XtbConfig {
     async fn get_trades(&self, opened_only: bool) -> Result<Vec<Trade>, error::XtbError> {
         let command = command::get_trades::get_trades(opened_only);
         let response = self.send_command(command).await?;
-        println!("{:?}", response);
         let response: command::get_trades::Response = serde_json::from_str(&response)?;
         match response.status {
             false => Err(error::XtbError::UnknownError),
@@ -282,27 +205,12 @@ impl XtbConfig {
         }
     }
 
-    // async fn get_tick_prices(
-    //     &self,
-    //     symbols: Vec<String>,
-    // ) -> Result<Vec<command::get_tick_prices::TickRecord>, error::XtbError> {
-    //     let command = command::get_tick_prices::get_tick_prices(symbols);
-    //     let response = self.send_command(command).await?;
-    //     println!("{:?}", response);
-    //     let response: command::get_tick_prices::Response = serde_json::from_str(&response)?;
-    //     match response.status {
-    //         false => Err(error::XtbError::UnknownError),
-    //         true => Ok(response.returnData.quotations),
-    //     }
-    // }
-
     async fn get_symbol(
         &self,
         symbol: String,
     ) -> Result<command::get_symbol::SymbolRecord, error::XtbError> {
         let command = command::get_symbol::get_symbol(symbol);
         let response = self.send_command(command).await?;
-        println!("{:?}", response);
         let response: command::get_symbol::Response = serde_json::from_str(&response)?;
         match response.status {
             false => Err(error::XtbError::UnknownError),
@@ -321,24 +229,27 @@ impl XtbConfig {
             .collect();
 
         /* use get_symbol */
-        let mut tick_prices = vec![];
+        let mut symbol_records = vec![];
         for symbol in symbols {
             let tick_price = self.get_symbol(symbol.clone()).await?;
-            tick_prices.push(tick_price);
+            symbol_records.push(tick_price);
         }
 
         let mut position_market_values = vec![];
 
         for trade in trades {
-            let tick_price = tick_prices
+            let symbol_record = symbol_records
                 .iter()
                 .find(|tick_price| tick_price.symbol == trade.symbol.clone().unwrap())
                 .unwrap();
             position_market_values.push(PositionMarketValue {
                 symbol: trade.symbol.unwrap(),
                 volume: trade.volume,
-                bid_price: tick_price.bid,
-                market_value: trade.volume * tick_price.bid,
+                bid_price: Amount::new(symbol_record.currencyProfit, symbol_record.bid),
+                market_value: Amount::new(
+                    symbol_record.currencyProfit,
+                    trade.volume * symbol_record.bid,
+                ),
             });
         }
         Ok(position_market_values)
@@ -373,7 +284,7 @@ impl XtbAccount {
 
 #[cfg(test)]
 mod tests {
-    use std::env;
+    use std::{env, result};
 
     use super::*;
 
@@ -416,34 +327,11 @@ mod tests {
             let mut xtb = XtbConfig::default();
             xtb.connect().await.unwrap();
             xtb.login(account).await.unwrap();
-            println!("{:?}", xtb.get_trades(true).await.unwrap());
+            let result = xtb.get_trades(true).await;
+            assert_eq!(matches!(result, Ok(_)), true);
+
         }
     }
-
-    // #[tokio::test]
-    // async fn get_tick_prices() {
-    //     let account_id = env::var("XTB_TEST_DEMO_ACCOUNT_ID").ok();
-    //     let password = env::var("XTB_TEST_DEMO_PASSWORD").ok();
-
-    //     /* Enable this test only if env-vars are set */
-    //     if account_id.is_some() && password.is_some() {
-    //         let account = XtbAccount::new(&account_id.unwrap(), &password.unwrap());
-    //         // let mut xtb = XtbConfig::new("xapi.xtb.com".to_string(), 5112);
-    //         let mut xtb = XtbConfig::default();
-    //         xtb.connect().await.unwrap();
-    //         xtb.login(account).await.unwrap();
-    //         assert!(
-    //             xtb.get_tick_prices(vec!["EURUSD".to_string()])
-    //                 .await
-    //                 .unwrap()
-    //                 .get(0)
-    //                 .unwrap()
-    //                 .ask
-    //                 > 0.0,
-    //             "EURUSD ask price should be greater than 0.0!"
-    //         );
-    //     }
-    // }
 
     #[tokio::test]
     async fn get_position_market_values() {
@@ -453,11 +341,10 @@ mod tests {
         /* Enable this test only if env-vars are set */
         if account_id.is_some() && password.is_some() {
             let account = XtbAccount::new(&account_id.unwrap(), &password.unwrap());
-            let mut xtb = XtbConfig::new("xapi.xtb.com".to_string(), 5112);
-            // let mut xtb = XtbConfig::default();
+            // let mut xtb = XtbConfig::new("xapi.xtb.com".to_string(), 5112);
+            let mut xtb = XtbConfig::default();
             xtb.connect().await.unwrap();
             xtb.login(account).await.unwrap();
-            println!("{:?}", xtb.get_position_market_values().await.unwrap());
         }
     }
 }
