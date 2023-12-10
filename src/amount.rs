@@ -1,6 +1,50 @@
 use serde::{Deserialize, Serialize};
 
-use crate::fx::Currency;
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug, Deserialize, Serialize)]
+pub enum Currency {
+    USD,
+    EUR,
+    GBP,
+    CHF,
+    PLN,
+    NATIVE,
+    UNKNOWN,
+}
+
+impl Currency {
+    pub fn from_str(s: &str) -> Option<Currency> {
+        match s {
+            "USD" => Some(Currency::USD),
+            "EUR" => Some(Currency::EUR),
+            "GBP" => Some(Currency::GBP),
+            "CHF" => Some(Currency::CHF),
+            "PLN" => Some(Currency::PLN),
+            _ => None,
+        }
+    }
+
+    pub fn to_str(&self) -> &str {
+        match self {
+            Currency::USD => "USD",
+            Currency::EUR => "EUR",
+            Currency::GBP => "GBP",
+            Currency::CHF => "CHF",
+            Currency::PLN => "PLN",
+            Currency::NATIVE => "PLN",
+            Currency::UNKNOWN => panic!("Unknown currency!"),
+        }
+    }
+
+    pub fn native() -> Currency {
+        Currency::NATIVE
+    }
+}
+
+impl std::fmt::Display for Currency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_str())
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Amount {

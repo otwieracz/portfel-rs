@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
@@ -8,7 +7,7 @@ use tokio_native_tls::TlsConnector;
 use tokio_native_tls::{native_tls, TlsStream};
 
 use crate::amount::Amount;
-use crate::{error, fx};
+use crate::error;
 
 use self::command::get_trades::Trade;
 
@@ -28,10 +27,10 @@ pub mod command {
         use serde::Deserialize;
         use std::collections::HashMap;
 
-        pub fn login(account_id: String, password: String) -> Command {
+        pub fn login(account_id: &String, password: &String) -> Command {
             let mut arguments = HashMap::new();
-            arguments.insert("userId".to_string(), account_id.into());
-            arguments.insert("password".to_string(), password.into());
+            arguments.insert("userId".to_string(), account_id.clone().into());
+            arguments.insert("password".to_string(), password.clone().into());
             Command {
                 command: "login".to_string(),
                 arguments,
@@ -41,7 +40,25 @@ pub mod command {
         #[derive(Debug, Deserialize)]
         pub struct Response {
             pub status: bool,
-            pub streamSessionId: Option<String>,
+        }
+    }
+
+    pub mod logout {
+        use super::Command;
+        use serde::Deserialize;
+        use std::collections::HashMap;
+
+        pub fn logout() -> Command {
+            let arguments = HashMap::new();
+            Command {
+                command: "logout".to_string(),
+                arguments,
+            }
+        }
+
+        #[derive(Debug, Deserialize)]
+        pub struct Response {
+            pub status: bool,
         }
     }
 
@@ -63,7 +80,8 @@ pub mod command {
         #[derive(Debug, Deserialize)]
         pub struct Response {
             pub status: bool,
-            pub returnData: Option<Vec<Trade>>,
+            #[serde(rename = "returnData")]
+            pub return_data: Option<Vec<Trade>>,
         }
 
         #[derive(Debug, Deserialize)]
@@ -76,7 +94,7 @@ pub mod command {
     pub mod get_symbol {
         use serde::Deserialize;
 
-        use crate::fx;
+        use crate::amount::Currency;
 
         use super::Command;
         use std::collections::HashMap;
@@ -93,14 +111,16 @@ pub mod command {
         #[derive(Debug, Deserialize)]
         pub struct Response {
             pub status: bool,
-            pub returnData: SymbolRecord,
+            #[serde(rename = "returnData")]
+            pub return_data: SymbolRecord,
         }
 
         #[derive(Debug, Deserialize)]
         pub struct SymbolRecord {
             pub bid: f64,
             pub symbol: String,
-            pub currencyProfit: fx::Currency,
+            #[serde(rename = "currencyProfit")]
+            pub currency_profit: Currency,
         }
     }
 }
@@ -115,23 +135,37 @@ pub struct PositionMarketValue {
 
 type Stream = BufReader<TlsStream<TcpStream>>;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct XtbConfig {
     host: String,
     port: u16,
     #[serde(skip)]
     stream: Option<Arc<Mutex<Stream>>>,
-    #[serde(skip)]
-    stream_session_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct XtbAccount {
+    account_id: String,
+    password: String,
+}
+
+impl XtbAccount {
+    #[allow(dead_code)]
+    pub fn new(account_id: &str, password: &str) -> Self {
+        Self {
+            account_id: account_id.to_string(),
+            password: password.to_string(),
+        }
+    }
 }
 
 impl XtbConfig {
+    #[allow(dead_code)]
     pub fn new(host: String, port: u16) -> Self {
         Self {
             host,
             port,
             stream: None,
-            stream_session_id: None,
         }
     }
 
@@ -176,16 +210,29 @@ impl XtbConfig {
         Ok(())
     }
 
-    pub async fn login(&mut self, account: XtbAccount) -> Result<(), error::XtbError> {
-        let command = command::login::login(account.account_id, account.password);
+    pub async fn disconnect(&mut self) -> Result<(), error::XtbError> {
+        self.logout().await?;
+        self.stream = None;
+        Ok(())
+    }
+
+    pub async fn login(&mut self, account: &XtbAccount) -> Result<(), error::XtbError> {
+        let command = command::login::login(&account.account_id, &account.password);
         let response = self.send_command(command).await?;
         let response: command::login::Response = serde_json::from_str(&response)?;
         match response.status {
             false => Err(error::XtbError::AuthenticationError),
-            true => {
-                self.stream_session_id = response.streamSessionId;
-                Ok(())
-            }
+            true => Ok(()),
+        }
+    }
+
+    pub async fn logout(&mut self) -> Result<(), error::XtbError> {
+        let command = command::logout::logout();
+        let response = self.send_command(command).await?;
+        let response: command::logout::Response = serde_json::from_str(&response)?;
+        match response.status {
+            false => Err(error::XtbError::UnknownError),
+            true => Ok(()),
         }
     }
 
@@ -196,7 +243,7 @@ impl XtbConfig {
         match response.status {
             false => Err(error::XtbError::UnknownError),
             true => {
-                if let Some(trades) = response.returnData {
+                if let Some(trades) = response.return_data {
                     Ok(trades)
                 } else {
                     Ok(vec![])
@@ -214,7 +261,7 @@ impl XtbConfig {
         let response: command::get_symbol::Response = serde_json::from_str(&response)?;
         match response.status {
             false => Err(error::XtbError::UnknownError),
-            true => Ok(response.returnData),
+            true => Ok(response.return_data),
         }
     }
 
@@ -245,9 +292,9 @@ impl XtbConfig {
             position_market_values.push(PositionMarketValue {
                 symbol: trade.symbol.unwrap(),
                 volume: trade.volume,
-                bid_price: Amount::new(symbol_record.currencyProfit, symbol_record.bid),
+                bid_price: Amount::new(symbol_record.currency_profit, symbol_record.bid),
                 market_value: Amount::new(
-                    symbol_record.currencyProfit,
+                    symbol_record.currency_profit,
                     trade.volume * symbol_record.bid,
                 ),
             });
@@ -255,45 +302,18 @@ impl XtbConfig {
         Ok(position_market_values)
     }
 }
-
-impl Default for XtbConfig {
-    fn default() -> Self {
-        Self {
-            host: "xapi.xtb.com".to_string(),
-            port: 5124,
-            stream: None,
-            stream_session_id: None,
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct XtbAccount {
-    account_id: String,
-    password: String,
-}
-
-impl XtbAccount {
-    pub fn new(account_id: &str, password: &str) -> Self {
-        Self {
-            account_id: account_id.to_string(),
-            password: password.to_string(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{env, result};
+    use std::env;
 
     use super::*;
 
     #[tokio::test]
     async fn failed_login_attempt() {
         let account = XtbAccount::new("123456", "password");
-        let mut xtb = XtbConfig::default();
+        let mut xtb = XtbConfig::new("xapi.xtb.com".to_string(), 5124);
         xtb.connect().await.unwrap();
-        let result = xtb.login(account).await;
+        let result = xtb.login(&account).await;
         assert_eq!(
             matches!(result, Err(error::XtbError::AuthenticationError)),
             true
@@ -308,9 +328,9 @@ mod tests {
         /* Enable this test only if env-vars are set */
         if account_id.is_some() && password.is_some() {
             let account = XtbAccount::new(&account_id.unwrap(), &password.unwrap());
-            let mut xtb = XtbConfig::default();
+            let mut xtb = XtbConfig::new("xapi.xtb.com".to_string(), 5124);
             xtb.connect().await.unwrap();
-            let result = xtb.login(account).await;
+            let result = xtb.login(&account).await;
             assert_eq!(matches!(result, Ok(())), true);
         }
     }
@@ -324,12 +344,11 @@ mod tests {
         if account_id.is_some() && password.is_some() {
             let account = XtbAccount::new(&account_id.unwrap(), &password.unwrap());
             // let mut xtb = XtbConfig::new("xapi.xtb.com".to_string(), 5112);
-            let mut xtb = XtbConfig::default();
+            let mut xtb = XtbConfig::new("xapi.xtb.com".to_string(), 5124);
             xtb.connect().await.unwrap();
-            xtb.login(account).await.unwrap();
+            xtb.login(&account).await.unwrap();
             let result = xtb.get_trades(true).await;
             assert_eq!(matches!(result, Ok(_)), true);
-
         }
     }
 
@@ -342,9 +361,9 @@ mod tests {
         if account_id.is_some() && password.is_some() {
             let account = XtbAccount::new(&account_id.unwrap(), &password.unwrap());
             // let mut xtb = XtbConfig::new("xapi.xtb.com".to_string(), 5112);
-            let mut xtb = XtbConfig::default();
+            let mut xtb = XtbConfig::new("xapi.xtb.com".to_string(), 5124);
             xtb.connect().await.unwrap();
-            xtb.login(account).await.unwrap();
+            xtb.login(&account).await.unwrap();
         }
     }
 }

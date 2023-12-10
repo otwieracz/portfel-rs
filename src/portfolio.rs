@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{error, fx::{self, Currency}, xtb, amount::Amount};
+use crate::{amount::Amount, amount::Currency, error, fx::Rates, xtb};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -14,7 +14,14 @@ struct Position {
     name: String,
     group: String,
     ticker: String,
-    amount: Amount,
+    /// `amount` is safe to unwrap
+    ///
+    /// It is possible to be `None` only when reading from file in cases where external provider like XTB is used.
+    /// In such case, the amount will be read from the external provider and set to `Some` value. If this process
+    /// were to fail, `from_file` would return an error.
+    ///
+    /// Any subsequent usages of `amount` should expect it to be `Some` and panic otherwise.
+    amount: Option<Amount>,
     target: f64,
 }
 
@@ -22,19 +29,36 @@ impl std::ops::Sub for Position {
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self::Output {
+        let self_amount = self.amount.unwrap();
+        let rhs_amount = rhs.amount.unwrap();
         assert!(
-            self.amount.currency == rhs.amount.currency,
+            self_amount.currency == rhs_amount.currency,
             "Cannot subtract positions with different currencies: {} != {}",
-            self.amount.currency,
-            rhs.amount.currency
+            self_amount.currency,
+            rhs_amount.currency
         );
         Self {
             name: self.name,
             group: self.group,
             ticker: self.ticker,
-            amount: self.amount - rhs.amount,
+            amount: Some(self_amount - rhs_amount),
             target: self.target,
         }
+    }
+}
+
+impl std::fmt::Display for Position {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let position_amount = self.amount.clone().unwrap();
+        write!(
+            f,
+            "[{:8.8}] {:37.36}: {:9.2} {}",
+            self.ticker.to_string(),
+            self.name.to_string(),
+            position_amount.value,
+            position_amount.currency,
+        )?;
+        Ok(())
     }
 }
 
@@ -46,6 +70,7 @@ struct Group {
 }
 
 impl Group {
+    #[allow(dead_code)]
     pub fn new(id: String, currency: Currency) -> Group {
         Group {
             id: id,
@@ -55,16 +80,18 @@ impl Group {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
-    xtb: xtb::XtbConfig,
+    xtb: Option<xtb::XtbConfig>,
+    #[serde(default = "Currency::native")]
+    base_currency: Currency,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Portfolio {
     /* Internal */
     #[serde(skip)]
-    rates: fx::Rates,
+    rates: Rates,
     /* Saved fields */
     config: Config,
     groups: Vec<Group>,
@@ -74,7 +101,8 @@ pub struct Portfolio {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            xtb: xtb::XtbConfig::default(),
+            xtb: None,
+            base_currency: Currency::native(),
         }
     }
 }
@@ -84,15 +112,21 @@ impl std::fmt::Display for Portfolio {
         writeln!(
             f,
             "Total value: {:.2} {:?}",
-            self.total_value(Currency::NATIVE).value,
-            Currency::NATIVE
+            self.total_value(self.config.base_currency).value,
+            self.config.base_currency
         )?;
         writeln!(f, "Positions:")?;
-        write!(
-            f,
-            "{}",
-            serde_yaml::to_string(&self.positions).map_err(|_| std::fmt::Error)?
-        )?;
+        for position in &self.positions {
+            let position_amount = position.amount.clone().unwrap();
+            let position_share =
+                position_amount.value / self.total_value(position_amount.currency).value;
+
+            writeln!(
+                f,
+                "- {} [{:4.2} ~ {:4.2}]",
+                position, position.target, position_share
+            )?;
+        }
         Ok(())
     }
 }
@@ -105,17 +139,18 @@ struct PositionChange {
 
 impl std::fmt::Display for PositionChange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let position_amount = self.position.amount.clone().unwrap();
         write!(
             f,
             "[{:8.8}] {:37.36}: {:9.2} {} -[+ {:9.2} {}]> {:9.2} {}",
             self.position.ticker.to_string(),
             self.position.name.to_string(),
-            self.position.amount.value,
-            self.position.amount.currency,
+            position_amount.value,
+            position_amount.currency,
             self.amount.value,
             self.amount.currency,
-            self.position.amount.value + self.amount.value,
-            self.position.amount.currency
+            position_amount.value + self.amount.value,
+            position_amount.currency
         )?;
         Ok(())
     }
@@ -162,19 +197,70 @@ impl ChangeRequest {
 }
 
 impl Portfolio {
-    pub fn new() -> Portfolio {
+    #[allow(dead_code)]
+    pub async fn new() -> Portfolio {
         Portfolio {
-            rates: fx::Rates::new(),
+            rates: Rates::load().await,
             config: Config::default(),
             groups: Vec::new(),
             positions: Vec::new(),
         }
     }
 
-    pub fn from_file(filename: &str) -> Result<Portfolio, error::PortfolioReadError> {
+    pub async fn from_file(filename: &str) -> Result<Portfolio, error::PortfolioReadError> {
         let file = std::fs::File::open(filename).map_err(error::PortfolioReadError::IoError)?;
-        let portfolio =
+        let mut portfolio: Portfolio =
             serde_yaml::from_reader(file).map_err(error::PortfolioReadError::JsonError)?;
+
+        /* Load rates */
+        portfolio.rates = Rates::load().await;
+
+        let mut position_market_values: HashMap<String, Amount> = HashMap::new();
+
+        if let Some(mut xtb) = portfolio.config.xtb.clone() {
+            // Get market values for all positions from XTB for each group
+            for group in &mut portfolio.groups {
+                if let Some(xtb_account) = group.xtb.clone() {
+                    xtb.connect()
+                        .await
+                        .map_err(error::PortfolioReadError::XtbError)?;
+                    xtb.login(&xtb_account)
+                        .await
+                        .map_err(error::PortfolioReadError::XtbError)?;
+                    let group_position_market_values = xtb
+                        .get_position_market_values()
+                        .await
+                        .map_err(error::PortfolioReadError::XtbError);
+                    xtb.disconnect()
+                        .await
+                        .map_err(error::PortfolioReadError::XtbError)?;
+
+                    for position_market_value in group_position_market_values? {
+                        // Currently same positions in different groups are not supported
+                        if position_market_values.contains_key(&position_market_value.symbol) {
+                            return Err(error::PortfolioReadError::DuplicateSymbolError(
+                                position_market_value.symbol,
+                            ));
+                        }
+
+                        position_market_values.insert(
+                            position_market_value.symbol.clone(),
+                            position_market_value.market_value,
+                        );
+                    }
+                }
+            }
+        }
+
+        for position in &mut portfolio.positions {
+            if position.amount.is_none() {
+                let position_market_value = position_market_values
+                    .get(&position.ticker)
+                    .ok_or(error::PortfolioReadError::AmountMissing)?;
+                position.amount = Some(position_market_value.clone());
+            }
+        }
+
         Ok(portfolio)
     }
 
@@ -185,9 +271,11 @@ impl Portfolio {
         };
 
         for position in &self.positions {
-            amount.value +=
-                self.rates
-                    .convert(position.amount.currency, currency, position.amount.value);
+            amount.value += self.rates.convert(
+                position.amount.clone().unwrap().currency,
+                currency,
+                position.amount.clone().unwrap().value,
+            );
         }
         amount
     }
@@ -200,27 +288,22 @@ impl Portfolio {
             .clone()
             .into_iter()
             .map(|position| {
+                let position_amount = position.clone().amount.unwrap();
                 /* Values in investment currency */
-                let old_value_in_currency = self.rates.convert(
-                    position.amount.currency,
-                    investment.currency,
-                    position.amount.value,
-                );
-                let new_value_in_currency = position.target
-                    * (investment.value + total_value.value)
-                    - old_value_in_currency;
+                let new_value_in_currency =
+                    position.target * (investment.value + total_value.value);
 
                 let new_value = self.rates.convert(
                     investment.currency,
-                    position.amount.currency,
+                    position_amount.currency,
                     new_value_in_currency,
                 );
 
                 PositionChange {
-                    position: position.clone(),
+                    position: position,
                     amount: Amount {
-                        currency: position.amount.currency,
-                        value: new_value - position.amount.value,
+                        currency: position_amount.currency,
+                        value: new_value - position_amount.value,
                     },
                 }
             })
@@ -237,7 +320,7 @@ mod test {
     use super::*;
     #[test]
     fn test_total_value() {
-        let rates = fx::Rates {
+        let rates = Rates {
             rates: vec![
                 (Currency::USD, 1.0),
                 (Currency::EUR, 1.2),
@@ -263,20 +346,20 @@ mod test {
             name: "Test".to_string(),
             ticker: "TEST".to_string(),
             group: "TEST1".to_string(),
-            amount: Amount {
+            amount: Some(Amount {
                 currency: Currency::USD,
                 value: 100.0,
-            },
+            }),
             target: 0.5,
         });
         portfolio.positions.push(Position {
             name: "Test".to_string(),
             ticker: "TEST".to_string(),
             group: "TEST2".to_string(),
-            amount: Amount {
+            amount: Some(Amount {
                 currency: Currency::EUR,
                 value: 100.0,
-            },
+            }),
             target: 0.5,
         });
         assert_eq!(
@@ -290,7 +373,7 @@ mod test {
 
     #[test]
     fn test_balance_empty() {
-        let rates = fx::Rates {
+        let rates = Rates {
             rates: vec![
                 (Currency::USD, 1.0),
                 (Currency::EUR, 1.2),
@@ -314,20 +397,20 @@ mod test {
                     name: "Test 1".to_string(),
                     ticker: "TEST1".to_string(),
                     group: "TEST1".to_string(),
-                    amount: Amount {
+                    amount: Some(Amount {
                         currency: Currency::USD,
                         value: 0.0,
-                    },
+                    }),
                     target: 0.3,
                 },
                 Position {
                     name: "Test 2".to_string(),
                     ticker: "TEST2".to_string(),
                     group: "TEST2".to_string(),
-                    amount: Amount {
+                    amount: Some(Amount {
                         currency: Currency::EUR,
                         value: 0.0,
-                    },
+                    }),
                     target: 0.7,
                 },
             ],
@@ -346,10 +429,10 @@ mod test {
                         name: "Test 1".to_string(),
                         ticker: "TEST1".to_string(),
                         group: "TEST1".to_string(),
-                        amount: Amount {
+                        amount: Some(Amount {
                             currency: Currency::USD,
                             value: 0.0,
-                        },
+                        }),
                         target: 0.3,
                     },
                     amount: Amount {
@@ -362,15 +445,93 @@ mod test {
                         name: "Test 2".to_string(),
                         ticker: "TEST2".to_string(),
                         group: "TEST2".to_string(),
-                        amount: Amount {
+                        amount: Some(Amount {
                             currency: Currency::EUR,
                             value: 0.0,
-                        },
+                        }),
                         target: 0.7,
                     },
                     amount: Amount {
                         currency: Currency::EUR,
                         value: 583.33,
+                    },
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_balance_non_empty() {
+        let rates = Rates {
+            rates: vec![(Currency::USD, 1.0)].into_iter().collect(),
+        };
+
+        let portfolio = Portfolio {
+            config: Config::default(),
+            groups: vec![Group::new("TEST1".to_string(), Currency::USD)],
+            rates: rates,
+            positions: vec![
+                Position {
+                    name: "Test 1".to_string(),
+                    ticker: "TEST1".to_string(),
+                    group: "TEST1".to_string(),
+                    amount: Some(Amount {
+                        currency: Currency::USD,
+                        value: 500.0,
+                    }),
+                    target: 0.5,
+                },
+                Position {
+                    name: "Test 2".to_string(),
+                    ticker: "TEST2".to_string(),
+                    group: "TEST1".to_string(),
+                    amount: Some(Amount {
+                        currency: Currency::USD,
+                        value: 500.0,
+                    }),
+                    target: 0.5,
+                },
+            ],
+        };
+        let investment = Amount {
+            currency: Currency::USD,
+            value: 1000.0,
+        };
+
+        let balanced = portfolio.balance(investment);
+        assert_eq!(
+            balanced.changes,
+            vec![
+                PositionChange {
+                    position: Position {
+                        name: "Test 1".to_string(),
+                        ticker: "TEST1".to_string(),
+                        group: "TEST1".to_string(),
+                        amount: Some(Amount {
+                            currency: Currency::USD,
+                            value: 500.0,
+                        }),
+                        target: 0.5,
+                    },
+                    amount: Amount {
+                        currency: Currency::USD,
+                        value: 500.0,
+                    },
+                },
+                PositionChange {
+                    position: Position {
+                        name: "Test 2".to_string(),
+                        ticker: "TEST2".to_string(),
+                        group: "TEST1".to_string(),
+                        amount: Some(Amount {
+                            currency: Currency::USD,
+                            value: 500.0,
+                        }),
+                        target: 0.5,
+                    },
+                    amount: Amount {
+                        currency: Currency::USD,
+                        value: 500.0,
                     },
                 },
             ]

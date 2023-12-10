@@ -11,11 +11,9 @@ pub enum FxError {
 pub enum PortfolioReadError {
     IoError(std::io::Error),
     JsonError(serde_yaml::Error),
-}
-
-#[derive(Debug)]
-pub enum PortfolioBalanceError {
-    GenericError,
+    AmountMissing,
+    DuplicateSymbolError(String),
+    XtbError(XtbError),
 }
 
 #[derive(Error, Debug)]
@@ -30,8 +28,6 @@ pub enum XtbError {
     JsonError(#[from] serde_json::Error),
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
-    #[error("Unknown currency")]
-    UnknownCurrency,
     #[error("Unknown error")]
     UnknownError,
 }

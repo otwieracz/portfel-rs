@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-use crate::error;
+use crate::{amount::Currency, error};
 
 #[derive(Deserialize)]
 struct SingleRateResponse {
@@ -14,46 +14,6 @@ struct ExchangeRateResponse {
     rates: Vec<SingleRateResponse>,
 }
 
-#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug, Deserialize, Serialize)]
-pub enum Currency {
-    USD,
-    EUR,
-    GBP,
-    CHF,
-    PLN,
-    NATIVE,
-}
-
-impl Currency {
-    pub fn from_str(s: &str) -> Option<Currency> {
-        match s {
-            "USD" => Some(Currency::USD),
-            "EUR" => Some(Currency::EUR),
-            "GBP" => Some(Currency::GBP),
-            "CHF" => Some(Currency::CHF),
-            "PLN" => Some(Currency::PLN),
-            _ => None,
-        }
-    }
-
-    fn to_str(&self) -> &str {
-        match self {
-            Currency::USD => "USD",
-            Currency::EUR => "EUR",
-            Currency::GBP => "GBP",
-            Currency::CHF => "CHF",
-            Currency::PLN => "PLN",
-            Currency::NATIVE => "PLN",
-        }
-    }
-}
-
-impl std::fmt::Display for Currency {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_str())
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Rates {
     pub rates: HashMap<Currency, f64>,
@@ -61,18 +21,22 @@ pub struct Rates {
 
 impl Default for Rates {
     fn default() -> Self {
-        Self::new()
+        Rates {
+            rates: HashMap::new(),
+        }
     }
 }
 
-fn get_rate(currency: Currency) -> Result<f64, error::FxError> {
+async fn get_rate(currency: Currency) -> Result<f64, error::FxError> {
     let url = format!(
         "http://api.nbp.pl/api/exchangerates/rates/a/{}",
         currency.to_str()
     );
-    Ok(reqwest::blocking::get(&url)
+    Ok(reqwest::get(&url)
+        .await
         .map_err(error::FxError::HttpError)?
         .json::<ExchangeRateResponse>()
+        .await
         .map_err(error::FxError::JsonError)?
         .rates
         .first()
@@ -81,10 +45,10 @@ fn get_rate(currency: Currency) -> Result<f64, error::FxError> {
 }
 
 impl Rates {
-    pub fn new() -> Rates {
+    pub async fn load() -> Rates {
         let mut rates = HashMap::new();
         for currency in vec![Currency::USD, Currency::EUR, Currency::GBP, Currency::CHF] {
-            rates.insert(currency, get_rate(currency).unwrap());
+            rates.insert(currency, get_rate(currency).await.unwrap());
         }
         rates.insert(Currency::PLN, 1.0);
         rates.insert(Currency::NATIVE, 1.0);

@@ -1,14 +1,15 @@
-use crate::{fx::Currency, amount::Amount};
+use crate::{amount::Amount, amount::Currency};
 use clap::{Parser, Subcommand};
 
+mod amount;
 mod error;
 mod fx;
 mod portfolio;
 mod xtb;
-mod amount;
 
 #[derive(Subcommand)]
 enum Commands {
+    Show,
     Invest {
         #[arg(short, long)]
         amount: f64,
@@ -25,9 +26,12 @@ struct Cli {
     command: Option<Commands>,
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let cli = Cli::parse();
-    let portfolio = portfolio::Portfolio::from_file(&cli.portfolio).unwrap();
+    let portfolio = portfolio::Portfolio::from_file(&cli.portfolio)
+        .await
+        .unwrap();
 
     match &cli.command {
         Some(Commands::Invest { amount, currency }) => {
@@ -38,6 +42,9 @@ fn main() {
             );
             let change_request = portfolio.balance(amount);
             println!("{}", &change_request);
+        }
+        Some(Commands::Show) => {
+            println!("{}", &portfolio);
         }
         None => todo!(),
     }
