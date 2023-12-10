@@ -146,7 +146,9 @@ pub struct XtbConfig {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct XtbAccount {
     account_id: String,
-    password: String,
+    encrypted_password: Option<String>,
+    #[serde(skip)]
+    password: Option<String>,
 }
 
 impl XtbAccount {
@@ -154,7 +156,22 @@ impl XtbAccount {
     pub fn new(account_id: &str, password: &str) -> Self {
         Self {
             account_id: account_id.to_string(),
-            password: password.to_string(),
+            encrypted_password: None,
+            password: Some(password.to_string()),
+        }
+    }
+
+    pub fn decrypt(&self, key: &str) -> Result<Self, error::XtbError> {
+        match &self.encrypted_password {
+            Some(encrypted_password) => {
+                let password = crate::crypt::decrypt_text(&encrypted_password, key)?;
+                Ok(Self {
+                    password: Some(password),
+                    encrypted_password: None,
+                    ..self.clone()
+                })
+            }
+            None => Err(error::XtbError::PasswordMissing),
         }
     }
 }
@@ -217,12 +234,17 @@ impl XtbConfig {
     }
 
     pub async fn login(&mut self, account: &XtbAccount) -> Result<(), error::XtbError> {
-        let command = command::login::login(&account.account_id, &account.password);
-        let response = self.send_command(command).await?;
-        let response: command::login::Response = serde_json::from_str(&response)?;
-        match response.status {
-            false => Err(error::XtbError::AuthenticationError),
-            true => Ok(()),
+        match &account.password {
+            Some(password) => {
+                let command = command::login::login(&account.account_id, &password);
+                let response = self.send_command(command).await?;
+                let response: command::login::Response = serde_json::from_str(&response)?;
+                match response.status {
+                    false => Err(error::XtbError::AuthenticationError),
+                    true => Ok(()),
+                }
+            }
+            None => Err(error::XtbError::PasswordMissing),
         }
     }
 

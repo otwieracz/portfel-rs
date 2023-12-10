@@ -207,10 +207,12 @@ impl Portfolio {
         }
     }
 
-    pub async fn from_file(filename: &str) -> Result<Portfolio, error::PortfolioReadError> {
-        let file = std::fs::File::open(filename).map_err(error::PortfolioReadError::IoError)?;
-        let mut portfolio: Portfolio =
-            serde_yaml::from_reader(file).map_err(error::PortfolioReadError::JsonError)?;
+    pub async fn from_file(
+        filename: &str,
+        encryption_key: &str,
+    ) -> Result<Portfolio, error::PortfolioReadError> {
+        let file = std::fs::File::open(filename)?;
+        let mut portfolio: Portfolio = serde_yaml::from_reader(file)?;
 
         /* Load rates */
         portfolio.rates = Rates::load().await;
@@ -221,19 +223,10 @@ impl Portfolio {
             // Get market values for all positions from XTB for each group
             for group in &mut portfolio.groups {
                 if let Some(xtb_account) = group.xtb.clone() {
-                    xtb.connect()
-                        .await
-                        .map_err(error::PortfolioReadError::XtbError)?;
-                    xtb.login(&xtb_account)
-                        .await
-                        .map_err(error::PortfolioReadError::XtbError)?;
-                    let group_position_market_values = xtb
-                        .get_position_market_values()
-                        .await
-                        .map_err(error::PortfolioReadError::XtbError);
-                    xtb.disconnect()
-                        .await
-                        .map_err(error::PortfolioReadError::XtbError)?;
+                    xtb.connect().await?;
+                    xtb.login(&xtb_account.decrypt(&encryption_key)?).await?;
+                    let group_position_market_values = xtb.get_position_market_values().await;
+                    xtb.disconnect().await?;
 
                     for position_market_value in group_position_market_values? {
                         // Currently same positions in different groups are not supported
