@@ -1,6 +1,12 @@
 use std::collections::HashMap;
 
-use crate::{amount::Amount, amount::Currency, error, fx::Rates, xtb};
+use crate::{
+    amount::Amount,
+    amount::Currency,
+    error,
+    fx::Rates,
+    xtb::{self, XtbAccount, XtbConfig},
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -207,6 +213,57 @@ impl Portfolio {
         }
     }
 
+    /// Initialize portfolio with example data
+    pub fn example(xtb_config: Option<XtbConfig>, xtb_account: Option<XtbAccount>) -> Portfolio {
+        Portfolio {
+            rates: Rates::default(),
+            config: Config {
+                xtb: xtb_config,
+                base_currency: Currency::USD,
+            },
+            groups: vec![
+                Group {
+                    id: "xtb_usd".to_string(),
+                    currency: Currency::USD,
+                    xtb: xtb_account.clone(),
+                },
+                Group {
+                    id: "cash_eur".to_string(),
+                    currency: Currency::EUR,
+                    xtb: None,
+                },
+            ],
+            positions: vec![
+                Position {
+                    name: "S&P 500".to_string(),
+                    ticker: "SPX500".to_string(),
+                    group: "xtb_usd".to_string(),
+                    amount: {
+                        if xtb_account.is_some() {
+                            None
+                        } else {
+                            Some(Amount {
+                                currency: Currency::USD,
+                                value: 100.0,
+                            })
+                        }
+                    },
+                    target: 0.5,
+                },
+                Position {
+                    name: "Cash".to_string(),
+                    ticker: "CASH".to_string(),
+                    group: "cash_eur".to_string(),
+                    amount: Some(Amount {
+                        currency: Currency::EUR,
+                        value: 100.0,
+                    }),
+                    target: 0.5,
+                },
+            ],
+        }
+    }
+
     pub async fn from_file(
         filename: &str,
         encryption_key: &str,
@@ -255,6 +312,13 @@ impl Portfolio {
         }
 
         Ok(portfolio)
+    }
+
+    pub async fn to_file(&self, filename: &str) -> Result<String, error::PortfolioWriteError> {
+        let mut file = std::fs::File::create(filename)?;
+        serde_yaml::to_writer(&mut file, &self)?;
+
+        Ok(filename.to_string())
     }
 
     fn total_value(&self, currency: Currency) -> Amount {

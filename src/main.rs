@@ -11,6 +11,12 @@ mod xtb;
 #[derive(Subcommand)]
 enum Commands {
     EncryptPassword,
+    Init {
+        #[clap(short, long, value_name = "YAML")]
+        portfolio: String,
+        #[arg(short, long)]
+        xtb_accont_id: Option<String>,
+    },
     Show {
         #[clap(short, long, value_name = "YAML")]
         portfolio: String,
@@ -67,6 +73,37 @@ async fn main() {
                 }
                 Err(e) => {
                     println!("Error reading portfolio file: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::Init {
+            portfolio,
+            xtb_accont_id: xtb_account_id,
+        }) => {
+            let (xtb_config, xtb_account) = if let Some(xtb_account_id) = xtb_account_id {
+                let key = rpassword::prompt_password("Portfolio key: ").unwrap();
+                let xtb_password = rpassword::prompt_password("XTB password: ").unwrap();
+                let xtb_config = Some(xtb::XtbConfig::new("xapi.xtb.com".to_owned(), 5112));
+                let xtb_account = Some(
+                    xtb::XtbAccount::new(xtb_account_id.clone(), None, Some(xtb_password))
+                        .encrypt(key.as_str())
+                        .expect("Failed to encrypt password!"),
+                );
+                (xtb_config, xtb_account)
+            } else {
+                (None, None)
+            };
+
+            match portfolio::Portfolio::example(xtb_config, xtb_account)
+                .to_file(&portfolio)
+                .await
+            {
+                Ok(filename) => {
+                    println!("Initialized portfolio file: {}", filename);
+                }
+                Err(e) => {
+                    println!("Error writing portfolio file: {}", e);
                     std::process::exit(1);
                 }
             }

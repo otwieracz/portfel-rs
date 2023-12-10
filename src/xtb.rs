@@ -153,11 +153,15 @@ pub struct XtbAccount {
 
 impl XtbAccount {
     #[allow(dead_code)]
-    pub fn new(account_id: &str, password: &str) -> Self {
+    pub fn new(
+        account_id: String,
+        encrypted_password: Option<String>,
+        password: Option<String>,
+    ) -> Self {
         Self {
-            account_id: account_id.to_string(),
-            encrypted_password: None,
-            password: Some(password.to_string()),
+            account_id: account_id,
+            encrypted_password: encrypted_password,
+            password: password,
         }
     }
 
@@ -168,6 +172,20 @@ impl XtbAccount {
                 Ok(Self {
                     password: Some(password),
                     encrypted_password: None,
+                    ..self.clone()
+                })
+            }
+            None => Err(error::XtbError::PasswordMissing),
+        }
+    }
+
+    pub fn encrypt(&self, key: &str) -> Result<Self, error::XtbError> {
+        match &self.password {
+            Some(password) => {
+                let encrypted_password = crate::crypt::encrypt_text(&password, key)?;
+                Ok(Self {
+                    password: None,
+                    encrypted_password: Some(encrypted_password),
                     ..self.clone()
                 })
             }
@@ -332,7 +350,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_login_attempt() {
-        let account = XtbAccount::new("123456", "password");
+        let account = XtbAccount::new("123456".to_owned(), None, Some("password".to_owned()));
         let mut xtb = XtbConfig::new("xapi.xtb.com".to_string(), 5124);
         xtb.connect().await.unwrap();
         let result = xtb.login(&account).await;
@@ -349,7 +367,7 @@ mod tests {
 
         /* Enable this test only if env-vars are set */
         if account_id.is_some() && password.is_some() {
-            let account = XtbAccount::new(&account_id.unwrap(), &password.unwrap());
+            let account = XtbAccount::new(account_id.unwrap(), None, Some(password.unwrap()));
             let mut xtb = XtbConfig::new("xapi.xtb.com".to_string(), 5124);
             xtb.connect().await.unwrap();
             let result = xtb.login(&account).await;
@@ -364,7 +382,7 @@ mod tests {
 
         /* Enable this test only if env-vars are set */
         if account_id.is_some() && password.is_some() {
-            let account = XtbAccount::new(&account_id.unwrap(), &password.unwrap());
+            let account = XtbAccount::new(account_id.unwrap(), None, Some(password.unwrap()));
             // let mut xtb = XtbConfig::new("xapi.xtb.com".to_string(), 5112);
             let mut xtb = XtbConfig::new("xapi.xtb.com".to_string(), 5124);
             xtb.connect().await.unwrap();
@@ -381,7 +399,7 @@ mod tests {
 
         /* Enable this test only if env-vars are set */
         if account_id.is_some() && password.is_some() {
-            let account = XtbAccount::new(&account_id.unwrap(), &password.unwrap());
+            let account = XtbAccount::new(account_id.unwrap(), None, Some(password.unwrap()));
             // let mut xtb = XtbConfig::new("xapi.xtb.com".to_string(), 5112);
             let mut xtb = XtbConfig::new("xapi.xtb.com".to_string(), 5124);
             xtb.connect().await.unwrap();

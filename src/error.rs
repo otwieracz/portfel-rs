@@ -24,6 +24,18 @@ pub enum PortfolioReadError {
 }
 
 #[derive(Error, Debug)]
+pub enum PortfolioWriteError {
+    #[error("I/O error: {0}")]
+    IoError(#[from] std::io::Error),
+    #[error("JSON parsing error: {0}")]
+    JsonError(#[from] serde_yaml::Error),
+    #[error("XTB error: {0}")]
+    XtbError(#[from] XtbError),
+    #[error("Crypt error: {0}")]
+    CryptError(#[from] CryptError),
+}
+
+#[derive(Error, Debug)]
 pub enum XtbError {
     #[error("Authentication error")]
     AuthenticationError,
