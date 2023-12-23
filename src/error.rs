@@ -1,4 +1,4 @@
-use thiserror::Error;
+    use thiserror::Error;
 
 #[derive(Debug)]
 pub enum FxError {
@@ -33,6 +33,12 @@ pub enum PortfolioWriteError {
     XtbError(#[from] XtbError),
     #[error("Crypt error: {0}")]
     CryptError(#[from] CryptError),
+}
+
+#[derive(Error, Debug)]
+pub enum PortfolioOpsError {
+    #[error("Unable to balance portfolio {0}")]
+    UnableToBalance(#[from] good_lp::solvers::ResolutionError)
 }
 
 #[derive(Error, Debug)]

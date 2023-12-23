@@ -7,6 +7,7 @@ use crate::{
     fx::Rates,
     xtb::{self, XtbAccount, XtbConfig},
 };
+use good_lp::{constraint, default_solver, Expression, Solution, SolverModel};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -323,7 +324,7 @@ impl Portfolio {
 
     fn total_value(&self, currency: Currency) -> Amount {
         let mut amount = Amount {
-            currency: currency,
+            currency,
             value: 0.0,
         };
 
@@ -337,38 +338,94 @@ impl Portfolio {
         amount
     }
 
-    pub fn balance(&self, investment: Amount) -> ChangeRequest {
-        let total_value = self.total_value(investment.currency);
+    /// Balance portfolio to given investment
+    /// Returns a list of changes to be made to the portfolio
+    pub fn balance(&self, investment: Amount) -> Result<ChangeRequest, error::PortfolioOpsError> {
+        let mut problem_variables = good_lp::ProblemVariables::new();
 
-        let position_changes = self
+        let current_portfolio_value = self.total_value(investment.currency).value;
+        let mut per_position_investments = vec![];
+        for _position in &self.positions {
+            per_position_investments
+                .push(problem_variables.add(good_lp::variable().min(0).max(investment.value)))
+        }
+
+        let total_investment: Expression = per_position_investments.iter().sum();
+        let new_portfolio_value = investment.value + current_portfolio_value;
+
+        let mut total_objective: Expression = 0.into();
+
+        let objectives: Vec<_> = self
             .positions
             .clone()
             .into_iter()
-            .map(|position| {
-                let position_amount = position.clone().amount.unwrap();
-                /* Values in investment currency */
-                let new_value_in_currency =
-                    position.target * (investment.value + total_value.value);
-
-                let new_value = self.rates.convert(
+            .zip(per_position_investments.clone().into_iter())
+            .map(|(position, position_investment)| {
+                // this position value in investment currency
+                let position_value = self.rates.convert(
+                    position.amount.clone().unwrap().currency,
                     investment.currency,
-                    position_amount.currency,
-                    new_value_in_currency,
+                    position.amount.clone().unwrap().value,
                 );
 
-                PositionChange {
-                    position: position,
-                    amount: Amount {
-                        currency: position_amount.currency,
-                        value: new_value - position_amount.value,
-                    },
+                // Objective for specific position - minimize the imbalance
+                let mut position_objective = ((position_value + position_investment)
+                    / new_portfolio_value)
+                    - position.target;
+
+                // If current share < target share, negate the objective (approaching from below 0)
+                let current_share = position_value / current_portfolio_value;
+                if current_share < position.target {
+                    position_objective = -position_objective;
                 }
+
+                // Add this position objective to total objective
+                total_objective += position_objective.clone();
+                position_objective
             })
             .collect();
 
-        ChangeRequest {
-            changes: position_changes,
+        // Define the problem
+        //
+        // Minimise the sum of differences of each share from targe share
+        // Constraint the total investment value to target investment value
+        let mut problem = problem_variables
+            .minimise(total_objective)
+            .using(default_solver)
+            .with(constraint!(total_investment == investment.value));
+
+        // Constrint each position: share can't be negative
+        for this in objectives {
+            problem = problem.with(constraint!(this.clone() >= 0.0));
         }
+
+        // Solve
+        let solution = problem.solve()?;
+
+        let changes: Vec<_> = self
+            .positions
+            .clone()
+            .into_iter()
+            .zip(per_position_investments.into_iter())
+            .map(|(position, variable)| {
+                let new_value = solution.value(variable.clone());
+                let position_currency = position.clone().amount.unwrap().currency;
+                let position_change = PositionChange {
+                    position: position.clone(),
+                    amount: Amount {
+                        currency: position.amount.unwrap().currency,
+                        value: self.rates.convert(
+                            investment.currency,
+                            position_currency,
+                            new_value,
+                        ),
+                    },
+                };
+                position_change
+            })
+            .collect();
+
+        Ok(ChangeRequest { changes })
     }
 }
 
@@ -479,7 +536,7 @@ mod test {
 
         let balanced = portfolio.balance(investment);
         assert_eq!(
-            balanced.changes,
+            balanced.unwrap().changes,
             vec![
                 PositionChange {
                     position: Position {
@@ -510,7 +567,7 @@ mod test {
                     },
                     amount: Amount {
                         currency: Currency::EUR,
-                        value: 583.33,
+                        value: 700.00 / 1.2,
                     },
                 },
             ]
@@ -557,7 +614,7 @@ mod test {
 
         let balanced = portfolio.balance(investment);
         assert_eq!(
-            balanced.changes,
+            balanced.unwrap().changes,
             vec![
                 PositionChange {
                     position: Position {
@@ -589,6 +646,84 @@ mod test {
                     amount: Amount {
                         currency: Currency::USD,
                         value: 500.0,
+                    },
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_balance_unbalancable() {
+        let rates = Rates {
+            rates: vec![(Currency::USD, 1.0)].into_iter().collect(),
+        };
+
+        let portfolio = Portfolio {
+            config: Config::default(),
+            groups: vec![Group::new("TEST1".to_string(), Currency::USD)],
+            rates: rates,
+            positions: vec![
+                Position {
+                    name: "Test 1".to_string(),
+                    ticker: "TEST1".to_string(),
+                    group: "TEST1".to_string(),
+                    amount: Some(Amount {
+                        currency: Currency::USD,
+                        value: 100.0,
+                    }),
+                    target: 0.5,
+                },
+                Position {
+                    name: "Test 2".to_string(),
+                    ticker: "TEST2".to_string(),
+                    group: "TEST1".to_string(),
+                    amount: Some(Amount {
+                        currency: Currency::USD,
+                        value: 500.0,
+                    }),
+                    target: 0.5,
+                },
+            ],
+        };
+        let investment = Amount {
+            currency: Currency::USD,
+            value: 300.0,
+        };
+
+        let balanced = portfolio.balance(investment);
+        assert_eq!(
+            balanced.unwrap().changes,
+            vec![
+                PositionChange {
+                    position: Position {
+                        name: "Test 1".to_string(),
+                        ticker: "TEST1".to_string(),
+                        group: "TEST1".to_string(),
+                        amount: Some(Amount {
+                            currency: Currency::USD,
+                            value: 100.0,
+                        }),
+                        target: 0.5,
+                    },
+                    amount: Amount {
+                        currency: Currency::USD,
+                        value: 300.0,
+                    },
+                },
+                PositionChange {
+                    position: Position {
+                        name: "Test 2".to_string(),
+                        ticker: "TEST2".to_string(),
+                        group: "TEST1".to_string(),
+                        amount: Some(Amount {
+                            currency: Currency::USD,
+                            value: 500.0,
+                        }),
+                        target: 0.5,
+                    },
+                    amount: Amount {
+                        currency: Currency::USD,
+                        value: 0.0,
                     },
                 },
             ]
