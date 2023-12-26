@@ -38,13 +38,18 @@ currency to keep the portfolio balanced without modifying the existing portfolio
 portfolio-cli --help
 ```
 
+### Portfolio path
+
+Portfolio file can be either specified with `--portfolio` (`-p)` option or it will be read from XDG data directory:
+- `~/Library/Application Support/pl.slawekgonet.portfel/portfolio.yaml` on macOS
+
 
 ### Initialize Portfolio
 
 Initialize a new portfolio with an optional XTB account configuration:
 
 ```bash
-portfolio-cli init --portfolio <PATH_TO_PORTFOLIO_FILE> --xtb_account_id <XTB_ACCOUNT_ID>
+portfolio-cli init --xtb_account_id <XTB_ACCOUNT_ID>
 ```
 
 If you do not provide an XTB account ID, you will be prompted to enter your XTB account credentials and portfolio secret. The password will be encrypted and stored in the portfolio.
@@ -60,7 +65,7 @@ Display details of an existing portfolio:
 (this is hand-crafted example, there might be discrepancies with the actual output)
 
 ```bash
-portfolio-cli show --portfolio <PATH_TO_PORTFOLIO_FILE>
+portfolio-cli show
 Portfolio key: <type password>
 Total value: 10000.00 USD
 Positions:
@@ -80,7 +85,7 @@ Simulate an investment in the portfolio, and display the suggested investment am
 (again, this is hand-crafted example, there might be discrepancies with the actual output)
 
 ```bash
-portfolio-cli invest --portfolio <PATH_TO_PORTFOLIO_FILE> --amount <INVESTMENT_AMOUNT> --currency <CURRENCY>
+portfolio-cli invest --amount <INVESTMENT_AMOUNT> --currency <CURRENCY>
 
  
 Portfolio key: <type password}

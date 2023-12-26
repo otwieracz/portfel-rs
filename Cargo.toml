@@ -1,6 +1,6 @@
 [package]
 name = "portfel"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -8,7 +8,10 @@ edition = "2021"
 [dependencies]
 base64 = "0.21.5"
 clap = { version = "4.4.11", features = ["derive"] }
+directories = "5.0.1"
+env_logger = "0.10.1"
 good_lp = { version = "1.7.0", features = ["minilp"], default_features = false }
+log = "0.4.20"
 openssl = "0.10.61"
 rand = "0.8.5"
 reqwest = { version = "0.11.22", features = ["json", "blocking"] }
