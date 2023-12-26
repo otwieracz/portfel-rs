@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::fx::Rates;
+
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug, Deserialize, Serialize)]
 pub enum Currency {
     USD,
@@ -67,6 +69,28 @@ impl Amount {
         Amount {
             currency: currency,
             value: value,
+        }
+    }
+
+    pub fn div(&self, other: &Amount, rates: &Rates) -> f64 {
+        if self.currency == other.currency {
+            self.value / other.value
+        } else {
+            self.value / rates.convert(other.currency, self.currency, other.value)
+        }
+    }
+
+    pub fn add(&self, other: &Amount, rates: &Rates) -> Amount {
+        if self.currency == other.currency {
+            Amount {
+                currency: self.currency,
+                value: self.value + other.value,
+            }
+        } else {
+            Amount {
+                currency: self.currency,
+                value: self.value + rates.convert(other.currency, self.currency, other.value),
+            }
         }
     }
 }

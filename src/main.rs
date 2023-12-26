@@ -56,7 +56,12 @@ async fn main() {
                         *amount,
                     );
                     let change_request = portfolio.balance(amount);
-                    println!("{}", &change_request.expect("Unable to balance portfolio!"));
+                    println!(
+                        "{}",
+                        &change_request
+                            .expect("Unable to balance portfolio!")
+                            .format(&portfolio)
+                    );
                 }
                 Err(e) => {
                     println!("Error reading portfolio file: {}", e);

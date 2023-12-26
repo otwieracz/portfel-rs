@@ -144,6 +144,24 @@ struct PositionChange {
     amount: Amount,
 }
 
+impl PositionChange {
+    fn new_value(&self) -> Amount {
+        let position_amount = self.position.amount.clone().unwrap();
+        Amount {
+            currency: position_amount.currency,
+            value: position_amount.value + self.amount.value,
+        }
+    }
+
+    fn format(&self, rates: &Rates, total_portfolio_value: Amount) -> String {
+        let position_share = self.new_value().div(&total_portfolio_value, &rates);
+        // Use regular display method, but add share
+        format!(
+            "{} [{:4.2} ~> {:4.2}]",
+            self, self.position.target, position_share
+        )
+    }
+}
 impl std::fmt::Display for PositionChange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let position_amount = self.position.amount.clone().unwrap();
@@ -168,22 +186,41 @@ pub struct ChangeRequest {
     changes: Vec<PositionChange>,
 }
 
-impl std::fmt::Display for ChangeRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "Change requests:")?;
+impl ChangeRequest {
+    pub fn format(&self, portfolio: &Portfolio) -> String {
+        let mut result = String::new();
+        let current_value = portfolio.total_value(portfolio.config.base_currency).value;
+        let total_change = self
+            .total_change(&portfolio.rates, portfolio.config.base_currency)
+            .value;
+        let new_value = current_value + total_change;
+
+        result.push_str("Change requests:\n");
         for change in &self.changes {
-            writeln!(f, "- {}", change)?;
+            result.push_str(&format!(
+                "{}\n",
+                change.format(
+                    &portfolio.rates,
+                    portfolio.total_value(portfolio.config.base_currency).add(
+                        &self.total_change(&portfolio.rates, portfolio.config.base_currency),
+                        &portfolio.rates,
+                    )
+                )
+            ));
         }
-        writeln!(f, "")?;
-        writeln!(f, "Change per group:")?;
+        result.push_str("\nChange per group:\n");
         for (group, amount) in self.change_per_group() {
-            writeln!(
-                f,
-                "- {:16.47}: + {:9.2} {}",
+            result.push_str(&format!(
+                "- {:16.47}: + {:9.2} {}\n",
                 group, amount.value, amount.currency
-            )?;
+            ));
         }
-        Ok(())
+        result.push_str(&format!(
+            "\nTotal: {:9.2} + {:9.2} = {:9.2} {}\n",
+            current_value, total_change, new_value, portfolio.config.base_currency,
+        ));
+
+        result
     }
 }
 
@@ -200,6 +237,15 @@ impl ChangeRequest {
             entry.value += amount.value;
         }
         change_per_group
+    }
+
+    pub fn total_change(&self, rates: &Rates, currency: Currency) -> Amount {
+        let mut total_change = Amount::new(currency, 0.0);
+        for change in &self.changes {
+            total_change.value +=
+                rates.convert(change.amount.currency, currency, change.amount.value);
+        }
+        total_change
     }
 }
 
