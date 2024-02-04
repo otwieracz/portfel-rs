@@ -57,6 +57,8 @@ pub enum XtbError {
     IoError(#[from] std::io::Error),
     #[error("Crypt error: {0}")]
     CryptError(#[from] CryptError),
+    #[error("XtbApiError ({0}): {1}")]
+    XtbApiError(String, String),
     #[error("Unknown error")]
     UnknownError,
 }

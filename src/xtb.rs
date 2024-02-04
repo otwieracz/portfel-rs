@@ -1,4 +1,6 @@
 use std::sync::{Arc, Mutex, PoisonError};
+use std::thread::sleep;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::io::BufReader;
@@ -14,7 +16,27 @@ use self::command::get_trades::Trade;
 pub mod command {
     use std::collections::HashMap;
 
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
+
+    use crate::error;
+
+    #[derive(Debug, Deserialize)]
+    pub struct GenericResponse {
+        pub status: bool,
+        #[serde(rename = "errorCode")]
+        pub error_code: Option<String>,
+        #[serde(rename = "errorDescr")]
+        pub error_desc: Option<String>,
+    }
+
+    impl GenericResponse {
+        pub fn to_xtb_api_error(&self) -> error::XtbError {
+            error::XtbError::XtbApiError(
+                self.error_code.clone().unwrap_or("".to_string()),
+                self.error_desc.clone().unwrap_or("".to_string()),
+            )
+        }
+    }
 
     #[derive(Debug, Serialize)]
     pub struct Command {
@@ -246,16 +268,25 @@ impl XtbConfig {
             tokio::io::AsyncWriteExt::write_all(&mut *stream, json_string.as_bytes()).await?;
 
             // Read the response from the server until two newline characters are encountered
-            let mut response = String::new();
+            let mut response_str = String::new();
             loop {
                 let bytes_read =
-                    tokio::io::AsyncBufReadExt::read_line(&mut *stream, &mut response).await?;
-                if bytes_read == 0 || response.ends_with("\n\n") {
+                    tokio::io::AsyncBufReadExt::read_line(&mut *stream, &mut response_str).await?;
+                if bytes_read == 0 || response_str.ends_with("\n\n") {
                     break;
                 }
             }
-            log::debug!("Response: {}", response);
-            Ok(response)
+
+            log::debug!("Response: {}", response_str);
+
+            /* Parse response into generic API response and check the status - if error, fail.
+            Otherwise return original string */
+            let generic_api_response =
+                serde_json::from_str::<command::GenericResponse>(&response_str)?;
+            match generic_api_response.status {
+                true => Ok(response_str),
+                false => Err(generic_api_response.to_xtb_api_error()),
+            }
         } else {
             return Err(error::XtbError::NotConnected);
         }
@@ -309,12 +340,15 @@ impl XtbConfig {
 
     async fn get_trades(&self, opened_only: bool) -> Result<Vec<Trade>, error::XtbError> {
         let command = command::get_trades::get_trades(opened_only);
-        let response = self.send_command(command).await?;
-        let response: command::get_trades::Response = serde_json::from_str(&response)?;
+        let response_str = self.send_command(command).await?;
+        let response: command::GenericResponse = serde_json::from_str(&response_str)?;
         match response.status {
-            false => Err(error::XtbError::UnknownError),
+            false => Err(response.to_xtb_api_error()),
             true => {
-                if let Some(trades) = response.return_data {
+                if let Some(trades) =
+                    serde_json::from_str::<command::get_trades::Response>(&response_str)?
+                        .return_data
+                {
                     Ok(trades)
                 } else {
                     Ok(vec![])
@@ -328,8 +362,8 @@ impl XtbConfig {
         symbol: String,
     ) -> Result<command::get_symbol::SymbolRecord, error::XtbError> {
         let command = command::get_symbol::get_symbol(symbol);
-        let response = self.send_command(command).await?;
-        let response: command::get_symbol::Response = serde_json::from_str(&response)?;
+        let response_str = self.send_command(command).await?;
+        let response: command::get_symbol::Response = serde_json::from_str(&response_str)?;
         match response.status {
             false => Err(error::XtbError::UnknownError),
             true => Ok(response.return_data),
@@ -337,7 +371,9 @@ impl XtbConfig {
     }
 
     #[allow(dead_code)]
-    async fn get_current_user_data(&self) -> Result<command::get_current_user_data::CurrentUserData, error::XtbError> {
+    async fn get_current_user_data(
+        &self,
+    ) -> Result<command::get_current_user_data::CurrentUserData, error::XtbError> {
         let command = command::get_current_user_data::get_current_user_data();
         let response = self.send_command(command).await?;
         let response: command::get_current_user_data::Response = serde_json::from_str(&response)?;
