@@ -111,3 +111,20 @@ impl std::ops::Sub for Amount {
         }
     }
 }
+
+impl std::ops::Add for Amount {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        assert!(
+            self.currency == rhs.currency,
+            "Cannot add amounts with different currencies: {} != {}",
+            self.currency,
+            rhs.currency
+        );
+        Self {
+            currency: self.currency,
+            value: self.value + rhs.value,
+        }
+    }
+}

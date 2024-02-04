@@ -321,37 +321,62 @@ impl Portfolio {
         /* Load rates */
         portfolio.rates = Rates::load().await;
 
-        let mut position_market_values: HashMap<String, Amount> = HashMap::new();
-
+        /* Read market values from xtb */
+        let mut xtb_position_market_values: HashMap<String, Amount> = HashMap::new();
         if let Some(mut xtb) = portfolio.config.xtb.clone() {
             // Get market values for all positions from XTB for each group
             for group in &mut portfolio.groups {
                 if let Some(xtb_account) = group.xtb.clone() {
                     xtb.connect().await?;
                     xtb.login(&xtb_account.decrypt(&encryption_key)?).await?;
-                    let group_position_market_values = xtb.get_position_market_values().await;
+
+                    let group_position_market_values: Result<Vec<_>, _> = xtb
+                        .get_position_market_values()
+                        .await?
+                        .into_iter()
+                        /* Filter only position from this group */
+                        .filter(|xtb_position| {
+                            portfolio.positions.iter().any(|position| {
+                                position.ticker == xtb_position.symbol && position.group == group.id
+                            })
+                        })
+                        .map(|x| {
+                            // Currently same positions in different groups are not supported
+                            // Check if position with this symbol already exists in global xtb_position_market_values
+                            if xtb_position_market_values.contains_key(&x.symbol) {
+                                return Err(error::PortfolioReadError::DuplicateSymbolError(
+                                    x.symbol,
+                                ));
+                            } else {
+                                return Ok((x.symbol, x.market_value));
+                            }
+                        })
+                        .collect();
                     xtb.disconnect().await?;
 
-                    for position_market_value in group_position_market_values? {
-                        // Currently same positions in different groups are not supported
-                        if position_market_values.contains_key(&position_market_value.symbol) {
-                            return Err(error::PortfolioReadError::DuplicateSymbolError(
-                                position_market_value.symbol,
-                            ));
+                    for (symbol, market_value) in group_position_market_values? {
+                        if xtb_position_market_values.contains_key(&symbol) {
+                            log::info!(
+                                "Duplicate symbol: {} in group: {}, adding",
+                                symbol,
+                                group.id.to_string()
+                            );
+                            xtb_position_market_values.insert(
+                                symbol.clone(),
+                                market_value + xtb_position_market_values[&symbol].clone(),
+                            );
+                        } else {
+                            xtb_position_market_values.insert(symbol, market_value);
                         }
-
-                        position_market_values.insert(
-                            position_market_value.symbol.clone(),
-                            position_market_value.market_value,
-                        );
                     }
                 }
             }
         }
 
+        /* Set position market values from xtb if `amount` is none. */
         for position in &mut portfolio.positions {
             if position.amount.is_none() {
-                let position_market_value = position_market_values
+                let position_market_value = xtb_position_market_values
                     .get(&position.ticker)
                     .ok_or(error::PortfolioReadError::AmountMissing)?;
                 position.amount = Some(position_market_value.clone());
@@ -478,9 +503,9 @@ impl Portfolio {
 #[cfg(test)]
 mod test {
     use super::*;
-    #[test]
-    fn test_total_value() {
-        let rates = Rates {
+
+    fn mock_rates() -> Rates {
+        Rates {
             rates: vec![
                 (Currency::USD, 1.0),
                 (Currency::EUR, 1.2),
@@ -490,7 +515,12 @@ mod test {
             ]
             .into_iter()
             .collect(),
-        };
+        }
+    }
+
+    #[test]
+    fn test_total_value() {
+        let rates = mock_rates();
 
         let mut portfolio = Portfolio {
             rates: rates,
@@ -533,17 +563,7 @@ mod test {
 
     #[test]
     fn test_balance_empty() {
-        let rates = Rates {
-            rates: vec![
-                (Currency::USD, 1.0),
-                (Currency::EUR, 1.2),
-                (Currency::GBP, 1.3),
-                (Currency::CHF, 1.4),
-                (Currency::PLN, 1.0),
-            ]
-            .into_iter()
-            .collect(),
-        };
+        let rates = mock_rates();
 
         let portfolio = Portfolio {
             config: Config::default(),

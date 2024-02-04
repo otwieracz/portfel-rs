@@ -123,6 +123,36 @@ pub mod command {
             pub currency_profit: Currency,
         }
     }
+
+    pub mod get_current_user_data {
+        use serde::Deserialize;
+
+        use crate::amount::Currency;
+
+        use super::Command;
+        use std::collections::HashMap;
+
+        pub fn get_current_user_data() -> Command {
+            let arguments = HashMap::new();
+            Command {
+                command: "getCurrentUserData".to_string(),
+                arguments,
+            }
+        }
+
+        #[derive(Debug, Deserialize)]
+        pub struct Response {
+            pub status: bool,
+            #[serde(rename = "returnData")]
+            pub return_data: CurrentUserData,
+        }
+
+        #[allow(dead_code)]
+        #[derive(Debug, Deserialize)]
+        pub struct CurrentUserData {
+            pub currency: Currency,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -224,6 +254,7 @@ impl XtbConfig {
                     break;
                 }
             }
+            log::debug!("Response: {}", response);
             Ok(response)
         } else {
             return Err(error::XtbError::NotConnected);
@@ -299,6 +330,17 @@ impl XtbConfig {
         let command = command::get_symbol::get_symbol(symbol);
         let response = self.send_command(command).await?;
         let response: command::get_symbol::Response = serde_json::from_str(&response)?;
+        match response.status {
+            false => Err(error::XtbError::UnknownError),
+            true => Ok(response.return_data),
+        }
+    }
+
+    #[allow(dead_code)]
+    async fn get_current_user_data(&self) -> Result<command::get_current_user_data::CurrentUserData, error::XtbError> {
+        let command = command::get_current_user_data::get_current_user_data();
+        let response = self.send_command(command).await?;
+        let response: command::get_current_user_data::Response = serde_json::from_str(&response)?;
         match response.status {
             false => Err(error::XtbError::UnknownError),
             true => Ok(response.return_data),
