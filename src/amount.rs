@@ -1,50 +1,25 @@
 use serde::{Deserialize, Serialize};
+use strum::Display;
+use strum_macros::EnumString;
 
 use crate::fx::Rates;
 
-#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug, Deserialize, Serialize, EnumString, Display)]
 pub enum Currency {
     USD,
     EUR,
     GBP,
+    JPY,
     CHF,
     PLN,
     NATIVE,
+    #[serde(untagged)]
     UNKNOWN,
 }
 
 impl Currency {
-    pub fn from_str(s: &str) -> Option<Currency> {
-        match s {
-            "USD" => Some(Currency::USD),
-            "EUR" => Some(Currency::EUR),
-            "GBP" => Some(Currency::GBP),
-            "CHF" => Some(Currency::CHF),
-            "PLN" => Some(Currency::PLN),
-            _ => None,
-        }
-    }
-
-    pub fn to_str(&self) -> &str {
-        match self {
-            Currency::USD => "USD",
-            Currency::EUR => "EUR",
-            Currency::GBP => "GBP",
-            Currency::CHF => "CHF",
-            Currency::PLN => "PLN",
-            Currency::NATIVE => "PLN",
-            Currency::UNKNOWN => panic!("Unknown currency!"),
-        }
-    }
-
     pub fn native() -> Currency {
         Currency::NATIVE
-    }
-}
-
-impl std::fmt::Display for Currency {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_str())
     }
 }
 

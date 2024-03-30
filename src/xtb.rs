@@ -1,6 +1,5 @@
+use std::str::FromStr;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::thread::sleep;
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::io::BufReader;
@@ -8,7 +7,7 @@ use tokio::net::TcpStream;
 use tokio_native_tls::TlsConnector;
 use tokio_native_tls::{native_tls, TlsStream};
 
-use crate::amount::Amount;
+use crate::amount::{Amount, Currency};
 use crate::error;
 
 use self::command::get_trades::Trade;
@@ -113,19 +112,16 @@ pub mod command {
         }
     }
 
-    pub mod get_symbol {
+    pub mod get_all_symbols {
         use serde::Deserialize;
-
-        use crate::amount::Currency;
 
         use super::Command;
         use std::collections::HashMap;
 
-        pub fn get_symbol(symbol: String) -> Command {
-            let mut arguments = HashMap::new();
-            arguments.insert("symbol".to_string(), symbol.into());
+        pub fn get_all_symbols() -> Command {
+            let arguments = HashMap::new();
             Command {
-                command: "getSymbol".to_string(),
+                command: "getAllSymbols".to_string(),
                 arguments,
             }
         }
@@ -134,7 +130,7 @@ pub mod command {
         pub struct Response {
             pub status: bool,
             #[serde(rename = "returnData")]
-            pub return_data: SymbolRecord,
+            pub return_data: Vec<SymbolRecord>,
         }
 
         #[derive(Debug, Deserialize)]
@@ -142,14 +138,12 @@ pub mod command {
             pub bid: f64,
             pub symbol: String,
             #[serde(rename = "currencyProfit")]
-            pub currency_profit: Currency,
+            pub currency_profit_symbol: String,
         }
     }
 
     pub mod get_current_user_data {
         use serde::Deserialize;
-
-        use crate::amount::Currency;
 
         use super::Command;
         use std::collections::HashMap;
@@ -172,7 +166,7 @@ pub mod command {
         #[allow(dead_code)]
         #[derive(Debug, Deserialize)]
         pub struct CurrentUserData {
-            pub currency: Currency,
+            pub currency_symbol: String,
         }
     }
 }
@@ -317,7 +311,10 @@ impl XtbConfig {
         match &account.password {
             Some(password) => {
                 let command = command::login::login(&account.account_id, &password);
-                let response = self.send_command(command).await?;
+                let response = self
+                    .send_command(command)
+                    .await
+                    .map_err(|_| error::XtbError::AuthenticationError)?;
                 let response: command::login::Response = serde_json::from_str(&response)?;
                 match response.status {
                     false => Err(error::XtbError::AuthenticationError),
@@ -357,13 +354,12 @@ impl XtbConfig {
         }
     }
 
-    async fn get_symbol(
+    async fn get_all_symbols(
         &self,
-        symbol: String,
-    ) -> Result<command::get_symbol::SymbolRecord, error::XtbError> {
-        let command = command::get_symbol::get_symbol(symbol);
+    ) -> Result<Vec<command::get_all_symbols::SymbolRecord>, error::XtbError> {
+        let command = command::get_all_symbols::get_all_symbols();
         let response_str = self.send_command(command).await?;
-        let response: command::get_symbol::Response = serde_json::from_str(&response_str)?;
+        let response: command::get_all_symbols::Response = serde_json::from_str(&response_str)?;
         match response.status {
             false => Err(error::XtbError::UnknownError),
             true => Ok(response.return_data),
@@ -388,17 +384,7 @@ impl XtbConfig {
     ) -> Result<Vec<PositionMarketValue>, error::XtbError> {
         let trades = self.get_trades(true).await?;
 
-        let symbols: Vec<String> = trades
-            .iter()
-            .map(|trade| trade.symbol.clone().unwrap())
-            .collect();
-
-        /* use get_symbol */
-        let mut symbol_records = vec![];
-        for symbol in symbols {
-            let tick_price = self.get_symbol(symbol.clone()).await?;
-            symbol_records.push(tick_price);
-        }
+        let symbol_records = self.get_all_symbols().await?;
 
         let mut position_market_values = vec![];
 
@@ -407,15 +393,17 @@ impl XtbConfig {
                 .iter()
                 .find(|tick_price| tick_price.symbol == trade.symbol.clone().unwrap())
                 .unwrap();
-            position_market_values.push(PositionMarketValue {
-                symbol: trade.symbol.unwrap(),
-                volume: trade.volume,
-                bid_price: Amount::new(symbol_record.currency_profit, symbol_record.bid),
-                market_value: Amount::new(
-                    symbol_record.currency_profit,
-                    trade.volume * symbol_record.bid,
-                ),
-            });
+
+            if let Ok(currency) = Currency::from_str(&symbol_record.currency_profit_symbol) {
+                position_market_values.push(PositionMarketValue {
+                    symbol: trade.symbol.unwrap(),
+                    volume: trade.volume,
+                    bid_price: Amount::new(currency.clone(), symbol_record.bid),
+                    market_value: Amount::new(currency.clone(), trade.volume * symbol_record.bid),
+                });
+            } else {
+                log::warn!("Unknown currency: {}", symbol_record.currency_profit_symbol)
+            }
         }
         Ok(position_market_values)
     }

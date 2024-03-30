@@ -1,16 +1,17 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, str::FromStr};
 
 use serde::Deserialize;
 
 use crate::{amount::Currency, error};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct SingleRateResponse {
+    code: String,
     mid: f64,
 }
 
 #[derive(Deserialize)]
-struct ExchangeRateResponse {
+struct ExchangeRateTable {
     rates: Vec<SingleRateResponse>,
 }
 
@@ -27,28 +28,32 @@ impl Default for Rates {
     }
 }
 
-async fn get_rate(currency: Currency) -> Result<f64, error::FxError> {
-    let url = format!(
-        "http://api.nbp.pl/api/exchangerates/rates/a/{}",
-        currency.to_str()
-    );
-    Ok(reqwest::get(&url)
+async fn get_rates() -> Result<Vec<SingleRateResponse>, error::FxError> {
+    let url = "http://api.nbp.pl/api/exchangerates/tables/a";
+    Ok(reqwest::get(url)
         .await
         .map_err(error::FxError::HttpError)?
-        .json::<ExchangeRateResponse>()
+        .json::<Vec<ExchangeRateTable>>()
         .await
         .map_err(error::FxError::JsonError)?
-        .rates
         .first()
         .ok_or(error::FxError::GenericParserError)?
-        .mid)
+        .rates
+        .clone())
 }
 
 impl Rates {
     pub async fn load() -> Rates {
         let mut rates = HashMap::new();
-        for currency in vec![Currency::USD, Currency::EUR, Currency::GBP, Currency::CHF] {
-            rates.insert(currency, get_rate(currency).await.unwrap());
+        // for currency in vec![Currency::USD, Currency::EUR, Currency::GBP, Currency::CHF] {
+        //     rates.insert(currency, get_rate(currency).await.unwrap());
+        // }
+        for rate in get_rates().await.unwrap() {
+            if let Ok(currency) = Currency::from_str(&rate.code) {
+                rates.insert(currency, rate.mid);
+            } else {
+                log::debug!("Unknown currency: {}", rate.code)
+            }
         }
         rates.insert(Currency::PLN, 1.0);
         rates.insert(Currency::NATIVE, 1.0);

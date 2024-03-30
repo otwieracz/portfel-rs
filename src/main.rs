@@ -1,3 +1,5 @@
+use std::{env, str::FromStr};
+
 use crate::{amount::Amount, amount::Currency};
 use clap::{Parser, Subcommand};
 
@@ -40,15 +42,15 @@ struct Cli {
 fn get_portfolio_file(path: &Option<String>) -> String {
     let file_path = match path {
         Some(path) => path.to_owned(),
-        None => { 
+        None => {
             let dirs = directories::ProjectDirs::from("pl", "slawekgonet", "portfel").unwrap();
-                dirs.data_dir()
-                    .join("portfolio.yaml")
-                    .to_str()
-                    .unwrap()
-                    .to_owned()
-
-        }};
+            dirs.data_dir()
+                .join("portfolio.yaml")
+                .to_str()
+                .unwrap()
+                .to_owned()
+        }
+    };
     println!("Using portfolio file: {}", file_path);
     if !std::path::Path::new(&file_path).exists() {
         log::error!("Portfolio file does not exist: {}", file_path);
@@ -93,7 +95,8 @@ async fn main() {
         }
         Some(Commands::Show { portfolio }) => {
             let portfolio_file = get_portfolio_file(portfolio);
-            let key = rpassword::prompt_password("Portfolio key: ").unwrap();
+            let key = env::var("PORTFOLIO_KEY")
+                .unwrap_or_else(|_| rpassword::prompt_password("Portfolio key: ").unwrap());
 
             match portfolio::Portfolio::from_file(&portfolio_file, &key).await {
                 Ok(portfolio) => {
