@@ -130,8 +130,8 @@ impl std::fmt::Display for Portfolio {
 
             writeln!(
                 f,
-                "- {} [{:4.2} ~ {:4.2}]",
-                position, position.target, position_share
+                "- {} [{:4.2} ({:4.2})]",
+                position, position_share, position.target
             )?;
         }
         Ok(())
@@ -157,8 +157,8 @@ impl PositionChange {
         let position_share = self.new_value().div(&total_portfolio_value, &rates);
         // Use regular display method, but add share
         format!(
-            "{} [{:4.2} ~> {:4.2}]",
-            self, self.position.target, position_share
+            "{} [{:4.2} ({:4.2})]",
+            self, position_share, self.position.target
         )
     }
 }
@@ -348,7 +348,10 @@ impl Portfolio {
                                     x.symbol,
                                 ));
                             } else {
-                                return Ok((x.symbol, x.market_value));
+                                return Ok((
+                                    x.symbol,
+                                    x.market_value.convert(group.currency, &portfolio.rates),
+                                ));
                             }
                         })
                         .collect();

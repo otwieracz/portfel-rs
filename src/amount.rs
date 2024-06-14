@@ -68,6 +68,13 @@ impl Amount {
             }
         }
     }
+
+    pub fn convert(&self, currency: Currency, rates: &Rates) -> Amount {
+        Amount {
+            currency: currency,
+            value: rates.convert(self.currency, currency, self.value),
+        }
+    }
 }
 
 impl std::ops::Sub for Amount {
